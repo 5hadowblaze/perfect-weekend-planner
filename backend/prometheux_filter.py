@@ -3,10 +3,15 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from models import CandidateItem, PlanRequest
+from models import (
+    CalendarSlot,
+    CandidateItem,
+    PlanRequest,
+    UserConstraintContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +30,10 @@ target_location("{location}").
 {diet_facts}
 {activity_facts}
 {accessibility_facts}
+{calendar_facts}
 
 % --- Budget ceiling ---
-budget_ok(Price) :- max_budget(B), Price =< B.
+budget_ok(Price) :- max_budget(B), Price <= B.
 
 % --- Location: city/area token in location field OR title ---
 loc_ok(Loc, Title) :- target_location(L), string_contains(Loc, L).
@@ -54,14 +60,68 @@ access_match(Tags, Title, Snippet) :- required_access_token(A), string_contains(
 access_ok(Tags, Title, Snippet) :- not has_access_constraints.
 access_ok(Tags, Title, Snippet) :- has_access_constraints, access_match(Tags, Title, Snippet).
 
+% --- Calendar free slots (morning / afternoon / evening) ---
+period_mentioned(DateHint, Title, Snippet) :- string_contains(DateHint, "morning").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(DateHint, "afternoon").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(DateHint, "evening").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(DateHint, "night").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(DateHint, "tonight").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Title, "morning").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Title, "afternoon").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Title, "evening").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Title, "night").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Snippet, "morning").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Snippet, "afternoon").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Snippet, "evening").
+period_mentioned(DateHint, Title, Snippet) :- string_contains(Snippet, "night").
+
+slot_day_match(DateHint, Title, Snippet, SlotDate) :- free_slot(SlotDate, _), string_contains(DateHint, SlotDate).
+slot_day_match(DateHint, Title, Snippet, SlotDate) :- free_slot(SlotDate, _), string_contains(Title, SlotDate).
+slot_day_match(DateHint, Title, Snippet, SlotDate) :- free_slot(SlotDate, _), string_contains(Snippet, SlotDate).
+slot_day_match(DateHint, Title, Snippet, "saturday") :- string_contains(DateHint, "sat").
+slot_day_match(DateHint, Title, Snippet, "saturday") :- string_contains(Title, "sat").
+slot_day_match(DateHint, Title, Snippet, "sunday") :- string_contains(DateHint, "sun").
+slot_day_match(DateHint, Title, Snippet, "sunday") :- string_contains(Title, "sun").
+slot_day_match(DateHint, Title, Snippet, SlotDate) :- string_contains(DateHint, "weekend"), free_slot(SlotDate, _).
+
+slot_period_match(DateHint, Title, Snippet, "morning") :- string_contains(DateHint, "morning").
+slot_period_match(DateHint, Title, Snippet, "morning") :- string_contains(Title, "morning").
+slot_period_match(DateHint, Title, Snippet, "morning") :- string_contains(Snippet, "morning").
+slot_period_match(DateHint, Title, Snippet, "afternoon") :- string_contains(DateHint, "afternoon").
+slot_period_match(DateHint, Title, Snippet, "afternoon") :- string_contains(Title, "afternoon").
+slot_period_match(DateHint, Title, Snippet, "afternoon") :- string_contains(Snippet, "afternoon").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(DateHint, "evening").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(DateHint, "night").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(DateHint, "tonight").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(Title, "evening").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(Title, "night").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(Snippet, "evening").
+slot_period_match(DateHint, Title, Snippet, "evening") :- string_contains(Snippet, "night").
+
+event_fits_slot(Id) :-
+  candidate(Id, _, Title, _, _, _, _, Snippet, DateHint),
+  free_slot(SlotDate, Period),
+  slot_day_match(DateHint, Title, Snippet, SlotDate),
+  slot_period_match(DateHint, Title, Snippet, Period).
+
+event_fits_slot(Id) :-
+  candidate(Id, _, Title, _, _, _, _, Snippet, DateHint),
+  free_slot(SlotDate, Period),
+  slot_day_match(DateHint, Title, Snippet, SlotDate),
+  not period_mentioned(DateHint, Title, Snippet).
+
+slot_ok(Id, Title, Snippet, DateHint) :- not has_calendar_constraints.
+slot_ok(Id, Title, Snippet, DateHint) :- has_calendar_constraints, event_fits_slot(Id).
+
 % --- Final gate: all constraint dimensions must pass ---
 matches(Id, Type, Title, Url, Price, Loc, Tags) :-
-  candidate(Id, Type, Title, Url, Price, Loc, Tags, Snippet),
+  candidate(Id, Type, Title, Url, Price, Loc, Tags, Snippet, DateHint),
   budget_ok(Price),
   loc_ok(Loc, Title),
   diet_ok(Tags, Title, Snippet),
   activity_ok(Tags, Title, Snippet),
-  access_ok(Tags, Title, Snippet).
+  access_ok(Tags, Title, Snippet),
+  slot_ok(Id, Title, Snippet, DateHint).
 
 @output("matches").
 """
@@ -81,7 +141,19 @@ class FilterResult:
     candidates_in: int
     candidates_out: int
     filter_method: FilterMethod
+    passed_rules_by_id: dict[str, list[str]] = field(default_factory=dict)
     concept_name: str = CONCEPT_NAME
+
+
+def context_from_plan(request: PlanRequest) -> UserConstraintContext:
+    return UserConstraintContext(
+        budget=request.budget,
+        diet=request.diet,
+        activities=request.activities,
+        accessibility=request.accessibility,
+        home_location=request.location,
+        calendar_slots=list(request.calendar_slots),
+    )
 
 
 def _escape_vadalog(value: str) -> str:
@@ -98,6 +170,15 @@ def _location_token(location: str) -> str:
     return primary or location.strip().lower()
 
 
+def _normalize_slot_date(date: str) -> str:
+    return date.strip().lower()
+
+
+def _slot_rule_name(slot: CalendarSlot) -> str:
+    date_token = re.sub(r"[^a-z0-9]+", "_", _normalize_slot_date(slot.date)).strip("_")
+    return f"free_slot_{date_token}_{slot.period}"
+
+
 def _build_candidate_facts(candidates: list[CandidateItem]) -> str:
     lines: list[str] = []
     for item in candidates:
@@ -106,7 +187,8 @@ def _build_candidate_facts(candidates: list[CandidateItem]) -> str:
             f'"{_escape_vadalog(item.title)}", "{_escape_vadalog(item.url)}", '
             f"{item.price_estimate}, "
             f'"{_escape_vadalog(item.location)}", "{_escape_vadalog(item.tags)}", '
-            f'"{_escape_vadalog(item.snippet)}").'
+            f'"{_escape_vadalog(item.snippet)}", '
+            f'"{_escape_vadalog(item.date_hint)}").'
         )
     return "\n".join(lines)
 
@@ -115,11 +197,23 @@ def _build_token_facts(predicate: str, tokens: list[str]) -> str:
     return "\n".join(f'{predicate}("{_escape_vadalog(token)}").' for token in tokens)
 
 
-def build_vadalog_program(candidates: list[CandidateItem], request: PlanRequest) -> str:
-    diet_tokens = _tokenize_constraints(request.diet)
-    activity_tokens = _tokenize_constraints(request.activities)
+def _build_calendar_facts(slots: list[CalendarSlot]) -> tuple[str, list[str]]:
+    if not slots:
+        return "", []
+    lines = [
+        f'free_slot("{_escape_vadalog(_normalize_slot_date(slot.date))}", "{slot.period}").'
+        for slot in slots
+    ]
+    return "\n".join(lines), ["has_calendar_constraints."]
+
+
+def build_vadalog_program(
+    candidates: list[CandidateItem], context: UserConstraintContext
+) -> str:
+    diet_tokens = _tokenize_constraints(context.diet)
+    activity_tokens = _tokenize_constraints(context.activities)
     accessibility_tokens = (
-        _tokenize_constraints(request.accessibility) if request.accessibility else []
+        _tokenize_constraints(context.accessibility) if context.accessibility else []
     )
 
     constraint_flags: list[str] = []
@@ -130,17 +224,110 @@ def build_vadalog_program(candidates: list[CandidateItem], request: PlanRequest)
     if accessibility_tokens:
         constraint_flags.append("has_access_constraints.")
 
+    calendar_facts, calendar_flags = _build_calendar_facts(context.calendar_slots)
+    constraint_flags.extend(calendar_flags)
+
     return VADALOG_TEMPLATE.format(
         facts=_build_candidate_facts(candidates),
-        budget=int(request.budget),
-        location=_escape_vadalog(_location_token(request.location)),
+        budget=int(context.budget),
+        location=_escape_vadalog(_location_token(context.home_location)),
         constraint_flags="\n".join(constraint_flags),
         diet_facts=_build_token_facts("required_diet_token", diet_tokens),
         activity_facts=_build_token_facts("required_activity_token", activity_tokens),
         accessibility_facts=_build_token_facts(
             "required_access_token", accessibility_tokens
         ),
+        calendar_facts=calendar_facts,
     )
+
+
+def _text_blob(*parts: str) -> str:
+    return " ".join(parts).lower()
+
+
+def _matches_token(blob: str, token: str) -> bool:
+    return token.lower() in blob
+
+
+def _matches_location(blob: str, location: str) -> bool:
+    token = _location_token(location)
+    return token in blob
+
+
+def _period_mentioned(blob: str) -> bool:
+    return any(
+        keyword in blob
+        for keyword in ("morning", "afternoon", "evening", "night", "tonight")
+    )
+
+
+def _slot_day_matches(blob: str, slot_date: str) -> bool:
+    normalized = _normalize_slot_date(slot_date)
+    if normalized in blob:
+        return True
+    if normalized == "saturday" and "sat" in blob:
+        return True
+    if normalized == "sunday" and "sun" in blob:
+        return True
+    if "weekend" in blob:
+        return True
+    return False
+
+
+def _slot_period_matches(blob: str, period: str) -> bool:
+    if period == "morning":
+        return "morning" in blob
+    if period == "afternoon":
+        return "afternoon" in blob
+    if period == "evening":
+        return any(keyword in blob for keyword in ("evening", "night", "tonight"))
+    return False
+
+
+def _event_fits_slot(item: CandidateItem, slot: CalendarSlot) -> bool:
+    blob = _text_blob(item.date_hint, item.title, item.snippet)
+    if not _slot_day_matches(blob, slot.date):
+        return False
+    if not _period_mentioned(blob):
+        return True
+    return _slot_period_matches(blob, slot.period)
+
+
+def compute_passed_rules(
+    item: CandidateItem, context: UserConstraintContext
+) -> list[str]:
+    blob = _text_blob(item.tags, item.title, item.snippet)
+    loc_blob = _text_blob(item.location, item.title)
+    rules: list[str] = []
+
+    if item.price_estimate <= context.budget:
+        rules.append("budget_ok")
+
+    if _matches_location(loc_blob, context.home_location):
+        rules.append("loc_ok")
+
+    diet_tokens = _tokenize_constraints(context.diet)
+    if not diet_tokens or any(_matches_token(blob, token) for token in diet_tokens):
+        rules.append("diet_match")
+
+    activity_tokens = _tokenize_constraints(context.activities)
+    if not activity_tokens or any(_matches_token(blob, token) for token in activity_tokens):
+        rules.append("activity_match")
+
+    access_tokens = (
+        _tokenize_constraints(context.accessibility) if context.accessibility else []
+    )
+    if not access_tokens or any(_matches_token(blob, token) for token in access_tokens):
+        rules.append("access_match")
+
+    for slot in context.calendar_slots:
+        if _event_fits_slot(item, slot):
+            rules.append(_slot_rule_name(slot))
+
+    if not context.calendar_slots:
+        rules.append("slot_ok")
+
+    return rules
 
 
 def _parse_matches_rows(payload: Any) -> list[dict[str, Any]]:
@@ -205,6 +392,45 @@ def _row_to_candidate(row: dict[str, Any]) -> CandidateItem | None:
         return None
 
 
+def _normalize_jarvispy_url(url: str) -> str:
+    """JarvisPy API lives on api.prometheux.ai; platform host serves the web UI (HTML)."""
+    normalized = url.strip().rstrip("/")
+    if "platform.prometheux.ai" in normalized:
+        normalized = normalized.replace("platform.prometheux.ai", "api.prometheux.ai")
+    return normalized
+
+
+def _resolve_project_id(px: Any, project_ref: str) -> str:
+    """Map PMTX_PROJECT_ID (hash or display name) to a JarvisPy project id."""
+    ref = (project_ref or "weekend-planner").strip()
+    try:
+        projects = px.list_projects(project_scopes=["user"]) or []
+    except Exception as exc:
+        raise PrometheuxSDKError(f"Could not list Prometheux projects: {exc}") from exc
+
+    if not isinstance(projects, list):
+        raise PrometheuxSDKError("Unexpected response listing Prometheux projects.")
+
+    for project in projects:
+        if project.get("id") == ref:
+            return ref
+    for project in projects:
+        if project.get("name") == ref:
+            return str(project["id"])
+
+    safe_name = re.sub(r"[^a-zA-Z0-9_]+", "_", ref).strip("_") or "weekend_planner"
+    try:
+        created = px.save_project(project_name=safe_name)
+    except Exception as exc:
+        raise PrometheuxSDKError(
+            f"No Prometheux project matching {ref!r} and could not create one: {exc}"
+        ) from exc
+
+    if isinstance(created, str) and created.strip():
+        return created.strip()
+    raise PrometheuxSDKError(f"Prometheux did not return a project id for {ref!r}.")
+
+
 def _load_prometheux_sdk() -> Any:
     try:
         import prometheux_chain as px
@@ -224,29 +450,50 @@ def _load_prometheux_sdk() -> Any:
     px.config.set("PMTX_TOKEN", token)
     jarvis_url = os.environ.get("JARVISPY_URL", "").strip()
     if jarvis_url:
-        px.config.set("JARVISPY_URL", jarvis_url)
+        px.config.set("JARVISPY_URL", _normalize_jarvispy_url(jarvis_url))
 
     return px
 
 
+def _save_concept(px: Any, project_id: str, program: str) -> None:
+    kwargs = {
+        "project_id": project_id,
+        "definition": program,
+        "concept_name": CONCEPT_NAME,
+        "output_predicate": OUTPUT_PREDICATE,
+    }
+    try:
+        px.save_concept(**kwargs)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "409" not in msg and "already exists" not in msg:
+            raise
+        logger.info("Prometheux concept exists; cleaning up %s before re-save", CONCEPT_NAME)
+        px.cleanup_concepts(project_id=project_id, concept_names=[CONCEPT_NAME])
+        px.save_concept(**kwargs)
+
+
 def _filter_with_sdk(program: str) -> list[CandidateItem]:
     px = _load_prometheux_sdk()
-    project_id = os.environ.get("PMTX_PROJECT_ID", "weekend-planner").strip() or "weekend-planner"
+    project_ref = os.environ.get("PMTX_PROJECT_ID", "weekend-planner").strip() or "weekend-planner"
+    project_id = _resolve_project_id(px, project_ref)
 
     logger.info(
-        "Prometheux SDK: save_concept + run_concept concept=%s project=%s",
+        "Prometheux SDK: save_concept + run_concept concept=%s project=%s (ref=%s)",
         CONCEPT_NAME,
         project_id,
+        project_ref,
     )
 
     try:
-        px.save_concept(project_id=project_id, code=program)
-        result = px.run_concept(project_id=project_id, concept_name=OUTPUT_PREDICATE)
+        _save_concept(px, project_id, program)
+        result = px.run_concept(project_id=project_id, concept_name=CONCEPT_NAME)
     except Exception as exc:
         raise PrometheuxSDKError(
             "Prometheux SDK failed. Verify PMTX_TOKEN at https://platform.prometheux.ai, "
-            "set JARVISPY_URL=https://platform.prometheux.ai/jarvispy/{org}/{username} "
-            "if required by the SDK, and keep PMTX_PROJECT_ID=weekend-planner (default). "
+            "set JARVISPY_URL=https://api.prometheux.ai/jarvispy/{org}/{username}, "
+            "start compute on the Prometheux platform if you see NO_ACTIVE_COMPUTE, "
+            "and set PMTX_PROJECT_ID to your project name or id (default weekend-planner). "
             f"Error: {exc}"
         ) from exc
 
@@ -256,8 +503,12 @@ def _filter_with_sdk(program: str) -> list[CandidateItem]:
 
 
 def filter_candidates(
-    candidates: list[CandidateItem], request: PlanRequest
+    candidates: list[CandidateItem],
+    context: UserConstraintContext | PlanRequest,
 ) -> FilterResult:
+    if isinstance(context, PlanRequest):
+        context = context_from_plan(context)
+
     candidates_in = len(candidates)
     if not candidates:
         return FilterResult(
@@ -267,14 +518,36 @@ def filter_candidates(
             filter_method="sdk",
         )
 
-    program = build_vadalog_program(candidates, request)
+    source_by_id = {item.id: item for item in candidates}
+    program = build_vadalog_program(candidates, context)
     logger.debug("Vadalog program:\n%s", program)
 
     filtered = _filter_with_sdk(program)
+    passed_rules_by_id: dict[str, list[str]] = {}
+    enriched: list[CandidateItem] = []
+
+    for item in filtered:
+        source = source_by_id.get(item.id)
+        if source:
+            merged = source.model_copy(
+                update={
+                    "title": item.title or source.title,
+                    "url": item.url or source.url,
+                    "price_estimate": item.price_estimate,
+                    "location": item.location or source.location,
+                    "tags": item.tags or source.tags,
+                }
+            )
+        else:
+            merged = item
+        rules = compute_passed_rules(merged, context)
+        passed_rules_by_id[merged.id] = rules
+        enriched.append(merged)
 
     return FilterResult(
-        candidates=filtered,
+        candidates=enriched,
         candidates_in=candidates_in,
-        candidates_out=len(filtered),
+        candidates_out=len(enriched),
         filter_method="sdk",
+        passed_rules_by_id=passed_rules_by_id,
     )

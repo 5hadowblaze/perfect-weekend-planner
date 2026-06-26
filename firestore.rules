@@ -1,0 +1,101 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {uid} (Firebase Auth UID)
+// Fields:
+//   - uid: string (required, immutable) — must match document ID / auth uid
+//   - homeCity: string (required, 1–120 chars)
+//   - budget: number (required, > 0, <= 100000)
+//   - diet: string (required, 1–500 chars)
+//   - activities: string (required, 1–500 chars)
+//   - accessibility: string (optional, 0–500 chars)
+//   - onboardingCompleted: bool (required)
+//   - createdAt: timestamp (required, immutable)
+//   - updatedAt: timestamp (required)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string
+        && request.resource.data[field].size() >= minLen
+        && request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data)
+        || (request.resource.data[field] is string
+          && request.resource.data[field].size() >= minLen
+          && request.resource.data[field].size() <= maxLen);
+    }
+
+    function uidMatchesDoc(userId) {
+      return request.resource.data.uid == userId
+        && request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return request.resource.data.uid == resource.data.uid;
+    }
+
+    function createdAtUnchanged() {
+      return request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function isValidUserProfile(userId) {
+      return hasOnlyAllowedFields([
+          'uid',
+          'homeCity',
+          'budget',
+          'diet',
+          'activities',
+          'accessibility',
+          'onboardingCompleted',
+          'createdAt',
+          'updatedAt',
+        ])
+        && uidMatchesDoc(userId)
+        && validStringLength('homeCity', 1, 120)
+        && request.resource.data.budget is number
+        && request.resource.data.budget > 0
+        && request.resource.data.budget <= 100000
+        && validStringLength('diet', 1, 500)
+        && validStringLength('activities', 1, 500)
+        && isValidOptionalString('accessibility', 0, 500)
+        && request.resource.data.onboardingCompleted is bool
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(userId);
+      allow update: if isOwner(userId)
+        && uidNotModified()
+        && createdAtUnchanged()
+        && isValidUserProfile(userId);
+      allow delete: if isOwner(userId);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

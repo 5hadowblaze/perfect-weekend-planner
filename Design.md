@@ -63,7 +63,22 @@ required_access_token("wheelchair").
 | `diet_ok` | If diet constraints exist, at least one `required_diet_token` matches tags/title/snippet |
 | `activity_ok` | If activity constraints exist, at least one `required_activity_token` matches |
 | `access_ok` | If accessibility constraints exist, at least one `required_access_token` matches |
+| `slot_ok` / `event_fits_slot` | If `free_slot` facts exist, event date/period text must overlap a user free slot |
 | `matches` | All of the above must hold |
+
+### Calendar free-slot facts
+
+User calendar availability is injected as Vadalog facts (morning / afternoon / evening):
+
+```vadalog
+free_slot("saturday", "afternoon").
+free_slot("sunday", "morning").
+has_calendar_constraints.
+```
+
+`event_fits_slot/1` matches when the event `date_hint`, title, or snippet mentions the slot day (including `sat`/`sun`/`weekend` aliases) and, when a period is mentioned, the period (`morning`, `afternoon`, `evening`/`night`/`tonight`). If no period is mentioned, day-only match is sufficient.
+
+Per-card `passed_rules` returned to the UI include tokens like `budget_ok`, `diet_match`, and `free_slot_saturday_afternoon`.
 
 Output predicate: `@output("matches")`.
 
@@ -122,6 +137,32 @@ Request body for `POST /plan` (and frontend form):
 
 ## Data flow
 
+### Discover (`GET /discover`) — Phase A
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Explorer as WeekendExplorer
+    participant API as api_discover_route
+    participant FastAPI as backend_main
+    participant Tavily
+    participant Prometheux
+
+    User->>Explorer: open map (profile loaded)
+    Explorer->>API: GET /api/discover?location&budget&diet&...
+    API->>FastAPI: GET /discover (same query params)
+    FastAPI->>Tavily: weekend events search
+    FastAPI->>Prometheux: Vadalog filter (SDK, PMTX_TOKEN required)
+    Note over FastAPI,Prometheux: free_slot facts + constraint facts
+    FastAPI-->>API: events + passed_rules + filter_stats
+    API-->>Explorer: DiscoverResponse
+    Explorer->>User: EventCard rule badges
+```
+
+When `budget` is provided, discover runs the same Prometheux Vadalog gate as `/plan` (SDK-only). Optional query params: `diet`, `activities`, `accessibility`, `calendar_slots` (JSON array of `{date, period}`). Response includes `filter_stats: { candidates_in, candidates_out, filter_method: "sdk" }` and per-event `passed_rules`, `prometheux_verified`, `match_score`.
+
+### Plan (`POST /plan`)
+
 ```mermaid
 sequenceDiagram
     participant User
@@ -178,8 +219,104 @@ sequenceDiagram
 | API proxy | `frontend/app/api/plan/route.ts` | Direct proxy (MPP optional) |
 | Agent API | `backend/main.py` | FastAPI on `:8000` |
 | Orchestrator | `backend/agent.py` | Tavily + Prometheux + Gemini + Langfuse |
+| Discover | `backend/discover.py` | Tavily search + Prometheux filter for map cards |
 | Filter | `backend/prometheux_filter.py` | Vadalog via `prometheux_chain` |
 | Output | `backend/format_output.py` | `cited.md` writer |
+
+---
+
+## Firebase setup
+
+Firebase backs **Google Sign-In**, **Google Calendar read access** (free weekends / events), and **Firestore user profiles** for one-time onboarding.
+
+| Item | Value |
+|------|-------|
+| Project ID | `perfect-weekend-planner` |
+| Console | https://console.firebase.google.com/project/perfect-weekend-planner/overview |
+| Web app | `perfect-weekend-planner-web` |
+| App ID | `1:1078602360488:web:116bf6e78076cc582a449d` |
+| Firestore region | `nam5` (default database) |
+
+### Repo files
+
+| Path | Purpose |
+|------|---------|
+| `firebase.json` | Firestore rules/indexes + Auth (Google provider, `localhost` authorized domain) |
+| `.firebaserc` | Active project alias |
+| `firestore.rules` | Users may read/write only `users/{uid}` where `uid == request.auth.uid` |
+| `frontend/lib/firebase.ts` | App init from `NEXT_PUBLIC_FIREBASE_*` env vars |
+| `frontend/lib/auth.ts` | Google sign-in popup + `calendar.readonly` OAuth scope |
+| `frontend/lib/calendar.ts` | Google Calendar freeBusy → weekend morning/afternoon/evening slots |
+| `frontend/lib/firestore.ts` | `UserProfile` save/load (`homeCity`, `budget`, `diet`, `activities`, `accessibility`) |
+| `frontend/lib/profile.ts` | Profile store abstraction (Firestore or localStorage) |
+
+### Deploy / update Firebase backend
+
+```bash
+# From repo root (logged in via firebase login)
+npx -y firebase-tools@latest deploy --only firestore
+npx -y firebase-tools@latest deploy --only auth
+```
+
+### Frontend env
+
+Copy `frontend/.env.local.example` → `frontend/.env.local` and fill `NEXT_PUBLIC_FIREBASE_*` from **Project settings → Your apps → Web app**. CLI one-liner:
+
+```bash
+npx -y firebase-tools@latest apps:sdkconfig WEB 1:1078602360488:web:116bf6e78076cc582a449d --project perfect-weekend-planner
+```
+
+Map SDK config keys to env vars: `apiKey` → `NEXT_PUBLIC_FIREBASE_API_KEY`, `authDomain` → `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, etc.
+
+### Google Calendar scope
+
+`frontend/lib/auth.ts` requests `https://www.googleapis.com/auth/calendar.readonly` on sign-in. The returned `accessToken` can call the Calendar API (client-side or forwarded to the Python backend). **Enable the Google Calendar API** in [Google Cloud Console](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=perfect-weekend-planner) for the same GCP project.
+
+### User profile schema (`users/{uid}`)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `uid` | string | Must match Auth UID / doc ID |
+| `homeCity` | string | e.g. `"Austin, TX"` |
+| `budget` | number | USD, > 0 |
+| `diet` | string | Comma-separated preferences |
+| `activities` | string | Comma-separated preferences |
+| `accessibility` | string? | Optional |
+| `onboardingCompleted` | boolean | Set `true` after onboarding |
+| `createdAt` / `updatedAt` | timestamp | Server timestamps |
+
+---
+
+## Weekend Explorer UI
+
+Map-first Next.js app at `/` (`WeekendExplorer`). Leaflet + OpenStreetMap for pins; sidebar for event cards and detail.
+
+| Component | Path | Role |
+|-----------|------|------|
+| `WeekendExplorer` | `frontend/components/WeekendExplorer.tsx` | Orchestrates auth, profile, calendar slots, discover, plan |
+| `ExplorerMap` | `frontend/components/ExplorerMap.tsx` | Dynamic Leaflet map with event markers |
+| `EventCard` | `frontend/components/EventCard.tsx` | Card with image, category, Prometheux rule badges |
+| `EventDetail` | `frontend/components/EventDetail.tsx` | Selected event + Plan weekend CTA |
+| `ProfileOnboarding` | `frontend/components/ProfileOnboarding.tsx` | One-time constraint capture modal |
+| `PlanResultsPanel` | `frontend/components/PlanResultsPanel.tsx` | Itinerary overlay after `/api/plan` |
+
+| Library | Path | Role |
+|---------|------|------|
+| `auth.ts` | `frontend/lib/auth.ts` | Firebase Google sign-in + `calendar.readonly` scope; stores OAuth token via `calendar.ts` |
+| `calendar.ts` | `frontend/lib/calendar.ts` | Google Calendar `freeBusy` → `{ date, period }[]` for morning/afternoon/evening |
+| `discover-client.ts` | `frontend/lib/discover-client.ts` | Builds discover query from profile + calendar slots |
+| `profile.ts` | `frontend/lib/profile.ts` | Firestore profile store (localStorage fallback when Firebase unset) |
+| `firestore.ts` | `frontend/lib/firestore.ts` | `users/{uid}` read/write |
+
+**Discover request shape** (proxied by `frontend/app/api/discover/route.ts`):
+
+```
+GET /api/discover?location=Austin,%20TX&budget=150&diet=vegan&activities=music&accessibility=wheelchair&calendar_slots=[{"date":"saturday","period":"afternoon"}]
+```
+
+**Plan request shape** includes the same `calendar_slots` array in the JSON body.
+
+When Prometheux SDK is unavailable, discover still returns events with locally computed `passed_rules` badges (no `filter_stats`); full SDK filter sets `prometheux_verified: true` and `filter_stats`.
 
 ---
 
@@ -197,12 +334,18 @@ Copy root `.env.example` to `.env.local` (frontend keys) and `backend/.env` (Pyt
 | `BACKEND_URL` | — | Next.js → FastAPI (default `http://localhost:8000`) |
 | `GEMINI_API_KEY` | Google AI | `agent.py` — itinerary generation |
 | `TAVILY_API_KEY` | Tavily | `agent.py` — live search |
-| `PMTX_TOKEN` | Prometheux | **Required** — `prometheux_filter.py` SDK auth |
+| `PMTX_TOKEN` | Prometheux | **Required** for `/plan` and filtered `/discover` — `prometheux_filter.py` SDK auth |
 | `JARVISPY_URL` | Prometheux | Optional JarvisPy endpoint if SDK requires it |
 | `PMTX_PROJECT_ID` | Prometheux | Project namespace (default `weekend-planner`) |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse | Auto-configured SDK |
 | `LANGFUSE_SECRET_KEY` | Langfuse | Auto-configured SDK |
 | `LANGFUSE_HOST` | Langfuse | Default `https://cloud.langfuse.com` |
+| `NEXT_PUBLIC_FIREBASE_API_KEY` | Firebase | Web app config |
+| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | Firebase | Web app config |
+| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | Firebase | `perfect-weekend-planner` |
+| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | Firebase | Web app config |
+| `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | Firebase | Web app config |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` | Firebase | Web app config |
 
 **MPP:** Scaffolded only. `SKIP_MPP=true` is the default — no wallet for hackathon demo. Set `SKIP_MPP=false` + MPP keys to enable the payment gate.
 

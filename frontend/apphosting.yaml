@@ -1,0 +1,21 @@
+# Firebase App Hosting config for the Next.js frontend (frontend/).
+# Set BACKEND_URL to your Cloud Run URL before deploying — see README.md.
+
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  minInstances: 0
+  maxInstances: 10
+  concurrency: 80
+
+env:
+  # Python FastAPI backend (deploy separately to Cloud Run for production)
+  - variable: BACKEND_URL
+    value: http://localhost:8000
+    availability:
+      - RUNTIME
+  - variable: SKIP_MPP
+    value: "true"
+    availability:
+      - BUILD
+      - RUNTIME

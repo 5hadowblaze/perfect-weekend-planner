@@ -42,7 +42,7 @@ Filter method is always `sdk` via `prometheux_chain` — no REST or Python fallb
 
 | Layer | Technology |
 | --- | --- |
-| UI | Next.js, TypeScript, Tailwind CSS |
+| UI | Next.js, TypeScript, Tailwind CSS, Leaflet + OpenStreetMap |
 | Live search | Tavily AI |
 | **Deterministic filter** | **Prometheux / Vadalog** (`prometheux_chain`) |
 | Itinerary formatting | Gemini (`gemini-3.1-pro-preview`) |
@@ -50,11 +50,27 @@ Filter method is always `sdk` via `prometheux_chain` — no REST or Python fallb
 | Agentic payments | MPP — **scaffolded only, optional** (`SKIP_MPP=true` default) |
 | Backend | Python FastAPI |
 
+## Weekend Explorer UI
+
+The app opens to **Weekend Explorer** — a map-first experience for discovering local events and planning verified itineraries.
+
+| Flow | What happens |
+|------|----------------|
+| **Sign in** | Google via Firebase (`frontend/lib/auth.ts`). Requests `calendar.readonly` scope; access token stored in session for free-slot lookup. Falls back to mock auth + localStorage when Firebase env vars are unset. |
+| **Onboarding** | One-time profile modal (`ProfileOnboarding`) — home city, budget, diet, activities, accessibility. Saved to Firestore `users/{uid}` (or localStorage in mock mode). |
+| **Calendar** | `frontend/lib/calendar.ts` calls Google Calendar `freeBusy` for upcoming Sat/Sun, derives morning / afternoon / evening free slots. Mock slots when calendar token unavailable. |
+| **Discover** | `WeekendExplorer` → `GET /api/discover` → FastAPI `/discover` with profile constraints + `calendar_slots` JSON. Tavily search + Prometheux Vadalog filter; cards show `passed_rules` badges (Budget, Location, Diet, Free saturday afternoon, …). |
+| **Plan** | Select an event → **Plan weekend** → `POST /api/plan` (MPP skipped when `SKIP_MPP=true`) with profile + `calendar_slots`. Returns itinerary + `filter_stats`. |
+
+Key files: `frontend/components/WeekendExplorer.tsx`, `EventCard.tsx`, `ExplorerMap.tsx`, `frontend/lib/discover-client.ts`, `frontend/lib/calendar.ts`, `backend/discover.py`.
+
+Type-check: `cd frontend && npx tsc --noEmit`
+
 ## Project structure
 
 ```
-frontend/     # Next.js form + /api/plan proxy (MPP optional)
-backend/      # agent.py: Tavily → Prometheux → Gemini → cited.md
+frontend/     # Weekend Explorer UI + /api/discover + /api/plan proxy (MPP optional)
+backend/      # discover.py + agent.py: Tavily → Prometheux → Gemini → cited.md
 cited.md      # Generated output at repo root
 Design.md     # Full PDD + architecture
 ```
@@ -85,10 +101,19 @@ uvicorn main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
-Open `http://localhost:3000`, submit constraints, and check:
+Open `http://localhost:3000`:
 
-- UI shows Prometheux filter stats (`candidates_in` → `candidates_out`)
-- `cited.md` at repo root lists verified candidates + itinerary
+1. Sign in with Google (or demo mode without Firebase keys).
+2. Complete onboarding — home city, budget, diet, activities.
+3. Browse the map + event cards; note Prometheux rule badges and filter stats in the sidebar header.
+4. Select an event → **Plan weekend** for a full itinerary.
+
+Verify backend:
+
+- `curl http://localhost:8000/health` → `{ "ok": true }`
+- Discover with constraints:  
+  `curl "http://localhost:8000/discover?location=Austin,%20TX&budget=150&diet=vegan&activities=music&calendar_slots=%5B%7B%22date%22%3A%22saturday%22%2C%22period%22%3A%22afternoon%22%7D%5D"`
+- `cited.md` at repo root after planning lists verified candidates + itinerary
 - Langfuse trace: `search-weekend-options` → `filter-with-prometheux` → `build-itinerary`
 
 ### Required keys
@@ -102,6 +127,69 @@ Open `http://localhost:3000`, submit constraints, and check:
 | `PMTX_PROJECT_ID` | no | Defaults to `weekend-planner` |
 | `LANGFUSE_*` | optional | Tracing |
 | `MPP_*` | optional | Set `SKIP_MPP=false` to enable payment gate |
+
+## Deploy (Firebase App Hosting + Cloud Run)
+
+The **Next.js frontend** deploys to [Firebase App Hosting](https://firebase.google.com/docs/app-hosting) (SSR). The **Python FastAPI backend** runs separately — for production, deploy it to **Cloud Run** and point the frontend at that URL.
+
+### Prerequisites (one-time, Firebase console)
+
+1. **Blaze plan** — App Hosting requires billing: [upgrade project](https://console.firebase.google.com/project/perfect-weekend-planner/overview?purchaseBillingPlan=metered).
+2. **Enable App Hosting** — Firebase console → **Build** → **App Hosting** → create backend `weekend-explorer` (or let the first CLI deploy create it).
+3. **Authorized domains** — Firebase console → **Authentication** → **Settings** → add your App Hosting URL (e.g. `weekend-explorer--perfect-weekend-planner.us-central1.hosted.app`) under **Authorized domains**.
+4. **Firestore** — rules/indexes deploy with `firebase deploy --only firestore` if not already applied.
+
+### Configure environment
+
+Edit `frontend/apphosting.yaml` before deploy:
+
+| Variable | Where | Notes |
+|----------|-------|-------|
+| `BACKEND_URL` | `apphosting.yaml` or secret | Cloud Run URL for FastAPI (e.g. `https://weekend-api-xxxxx.run.app`) |
+| `NEXT_PUBLIC_FIREBASE_*` | App Hosting env / secrets | Web app config from Project Settings |
+| `SKIP_MPP` | `apphosting.yaml` | Keep `true` for hackathon demo |
+
+For sensitive keys, use Secret Manager:
+
+```bash
+npx -y firebase-tools@latest apphosting:secrets:set BACKEND_URL
+npx -y firebase-tools@latest apphosting:secrets:grantaccess BACKEND_URL --backend weekend-explorer
+```
+
+Then reference the secret in `frontend/apphosting.yaml` instead of a plain `value`.
+
+### Deploy frontend (App Hosting)
+
+From the **repo root** (not `frontend/`):
+
+```bash
+# Install & verify build locally
+cd frontend && npm install && npm run build
+
+# Deploy App Hosting backend (uses firebase.json → rootDir: frontend)
+cd .. && npx -y firebase-tools@latest deploy --only apphosting
+```
+
+`firebase.json` sets `apphosting.rootDir` to `frontend` and `backendId` to `weekend-explorer`. Config file: `frontend/apphosting.yaml`.
+
+### Deploy backend (Cloud Run, separate)
+
+The hackathon backend is **not** bundled into App Hosting. Example:
+
+```bash
+cd backend
+gcloud run deploy weekend-api \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "GEMINI_API_KEY=...,TAVILY_API_KEY=...,PMTX_TOKEN=..."
+```
+
+Set `BACKEND_URL` in `frontend/apphosting.yaml` to the Cloud Run service URL, then redeploy the frontend.
+
+### Local map
+
+The explorer map uses **Leaflet + OpenStreetMap** — no Google Maps API key required.
 
 ## License
 

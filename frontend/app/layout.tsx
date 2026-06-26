@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Perfect Weekend Planner",
+  title: "Weekend Explorer",
   description:
-    "Deterministic weekend planner — Prometheux/Vadalog filter gate, Tavily search, Langfuse traces.",
+    "Google Explore-style weekend planner — discover local events, plan with Prometheux/Vadalog.",
 };
 
 export default function RootLayout({
