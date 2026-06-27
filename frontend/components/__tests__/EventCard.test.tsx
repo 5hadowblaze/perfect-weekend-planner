@@ -1,26 +1,8 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import EventCard from "../EventCard";
 import type { DiscoverEvent } from "@/lib/types";
-
-vi.mock("next/image", () => ({
-  default: ({
-    src,
-    alt,
-    ...props
-  }: {
-    src: string;
-    alt: string;
-    fill?: boolean;
-    className?: string;
-    sizes?: string;
-    unoptimized?: boolean;
-  }) => (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img src={src} alt={alt} data-testid="event-image" {...props} />
-  ),
-}));
 
 const baseEvent: DiscoverEvent = {
   id: "evt-1",
@@ -46,8 +28,9 @@ describe("EventCard", () => {
     expect(screen.getByText("Sunset Jazz on the River")).toBeInTheDocument();
     expect(screen.getByText("Music")).toBeInTheDocument();
     expect(screen.getByText("$30")).toBeInTheDocument();
-    expect(screen.getByText("Sat 7pm")).toBeInTheDocument();
-    expect(screen.getByText("Lady Bird Lake, Austin")).toBeInTheDocument();
+    expect(
+      screen.getByText("Sat 7pm · Lady Bird Lake, Austin"),
+    ).toBeInTheDocument();
   });
 
   it("renders passed_rules badges with formatted labels", () => {
@@ -67,7 +50,7 @@ describe("EventCard", () => {
     expect(screen.getByText("Activities")).toBeInTheDocument();
   });
 
-  it("shows overflow badge when more than four rules pass", () => {
+  it("shows overflow badge when more than three rules pass", () => {
     render(
       <EventCard
         event={{
@@ -86,7 +69,7 @@ describe("EventCard", () => {
       />,
     );
 
-    expect(screen.getByText("+2")).toBeInTheDocument();
+    expect(screen.getByText("+3")).toBeInTheDocument();
   });
 
   it("renders Prometheux verified pill when prometheux_verified is true", () => {
@@ -98,7 +81,7 @@ describe("EventCard", () => {
       />,
     );
 
-    expect(screen.getByText("Prometheux ✓")).toBeInTheDocument();
+    expect(screen.getByText("Verified")).toBeInTheDocument();
   });
 
   it("does not render Prometheux pill when not verified", () => {
@@ -110,7 +93,7 @@ describe("EventCard", () => {
       />,
     );
 
-    expect(screen.queryByText("Prometheux ✓")).not.toBeInTheDocument();
+    expect(screen.queryByText("Verified")).not.toBeInTheDocument();
   });
 
   it("applies selected styling when selected", () => {
@@ -119,6 +102,6 @@ describe("EventCard", () => {
     );
 
     const button = container.querySelector("button");
-    expect(button?.className).toContain("border-[#1a73e8]");
+    expect(button?.className).toContain("event-card--map-selected");
   });
 });
