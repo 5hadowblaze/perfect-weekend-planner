@@ -46,8 +46,9 @@ describe("EventCard", () => {
     expect(screen.getByText("Sunset Jazz on the River")).toBeInTheDocument();
     expect(screen.getByText("Music")).toBeInTheDocument();
     expect(screen.getByText("$30")).toBeInTheDocument();
-    expect(screen.getByText("Sat 7pm")).toBeInTheDocument();
-    expect(screen.getByText("Lady Bird Lake, Austin")).toBeInTheDocument();
+    expect(
+      screen.getByText("Sat 7pm · Lady Bird Lake, Austin"),
+    ).toBeInTheDocument();
   });
 
   it("renders passed_rules badges with formatted labels", () => {
@@ -86,7 +87,7 @@ describe("EventCard", () => {
       />,
     );
 
-    expect(screen.getByText("+2")).toBeInTheDocument();
+    expect(screen.getByText("+3")).toBeInTheDocument();
   });
 
   it("renders Prometheux verified pill when prometheux_verified is true", () => {
@@ -98,7 +99,7 @@ describe("EventCard", () => {
       />,
     );
 
-    expect(screen.getByText("Prometheux ✓")).toBeInTheDocument();
+    expect(screen.getByText("Verified")).toBeInTheDocument();
   });
 
   it("does not render Prometheux pill when not verified", () => {
@@ -110,7 +111,7 @@ describe("EventCard", () => {
       />,
     );
 
-    expect(screen.queryByText("Prometheux ✓")).not.toBeInTheDocument();
+    expect(screen.queryByText("Verified")).not.toBeInTheDocument();
   });
 
   it("applies selected styling when selected", () => {
@@ -119,6 +120,6 @@ describe("EventCard", () => {
     );
 
     const button = container.querySelector("button");
-    expect(button?.className).toContain("border-[#1a73e8]");
+    expect(button?.className).toContain("event-card--map-selected");
   });
 });

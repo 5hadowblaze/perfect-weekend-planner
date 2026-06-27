@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Download demo event photos locally and regenerate shared/demo-event-images.json.
+ * Download demo event photos locally and regenerate backend/shared/demo-event-images.json.
  * Run: node scripts/build-event-images.mjs
  */
 
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const imagesDir = join(root, "frontend/public/images/events");
-const outPath = join(root, "shared/demo-event-images.json");
+const outPath = join(root, "backend/shared/demo-event-images.json");
 
 const pexelsSource = (id) =>
   `https://images.pexels.com/photos/${id}/pexels-photo-${id}.jpeg?auto=compress&cs=tinysrgb&w=640&h=400&fit=crop`;

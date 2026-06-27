@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const data = JSON.parse(
   readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "../shared/demo-event-images.json"),
+    join(dirname(fileURLToPath(import.meta.url)), "../backend/shared/demo-event-images.json"),
     "utf8",
   ),
 );

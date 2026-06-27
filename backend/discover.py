@@ -265,14 +265,8 @@ def discover_local_events(
 
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
-        center = _city_center(location)
-        return DiscoverResponse(
-            location=location,
-            events=_mock_events(location),
-            source="mock",
-            center_lat=center[0],
-            center_lng=center[1],
-        )
+        logger.info("No TAVILY_API_KEY — falling back to demo discover data")
+        return build_demo_discover_response(location, context)
 
     events: list[DiscoverEvent] = []
     source = "tavily"
@@ -310,8 +304,9 @@ def discover_local_events(
                 filter_method=filter_result.filter_method,
                 concept_name=filter_result.concept_name,
             )
-        except (PrometheuxConfigError, PrometheuxEngineBusyError, PrometheuxSDKError):
-            raise
+        except (PrometheuxConfigError, PrometheuxEngineBusyError, PrometheuxSDKError) as exc:
+            logger.warning("Prometheux discover filter failed (%s) — demo fallback", exc)
+            return build_demo_discover_response(location, context)
         except Exception as exc:
             logger.warning("Prometheux discover filter failed (%s) — demo fallback", exc)
             return build_demo_discover_response(location, context)
