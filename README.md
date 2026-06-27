@@ -185,11 +185,20 @@ Restart the backend after updating env vars. If Prometheux is unavailable (`ENGI
 
 **Live URL:** `https://weekend-explorer--perfect-weekend-planner.us-central1.hosted.app` (see `firebase.json` redirect target).
 
+All `/api/discover` and `/api/plan` requests require a valid **Firebase ID token** (`Authorization: Bearer <token>`). The Next.js App Hosting layer verifies the token, then forwards it to Cloud Run. Sign in with Google (web or iOS) before calling discover/plan.
+
 One-liner:
 
 ```bash
-# Backend → Cloud Run (set USE_DEMO_DATA=true for hackathon reliability)
-cd backend && gcloud run deploy weekend-api --source . --region us-central1 --allow-unauthenticated --set-env-vars "USE_DEMO_DATA=true,..."
+# Backend → Cloud Run (authenticated — no public invoker)
+cd backend && gcloud run deploy weekend-api --source . --region us-central1 --no-allow-unauthenticated --set-env-vars "USE_DEMO_DATA=true,..."
+
+# Grant App Hosting service account permission to invoke Cloud Run (once per backend)
+# Replace PROJECT_NUMBER and SA email from Firebase console / gcloud iam service-accounts list
+gcloud run services add-iam-policy-binding weekend-api \
+  --region us-central1 \
+  --member="serviceAccount:firebase-app-hosting-compute@perfect-weekend-planner.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
 
 # Frontend → App Hosting (from repo root, demo branch)
 cd frontend && npm run build && cd .. && npx -y firebase-tools@latest deploy --only apphosting
@@ -235,18 +244,28 @@ cd .. && npx -y firebase-tools@latest deploy --only apphosting
 
 ### Deploy backend (Cloud Run, separate)
 
-The Python FastAPI backend is **not** bundled into App Hosting:
+The Python FastAPI backend is **not** bundled into App Hosting. Deploy it **without** public access, then grant the App Hosting compute service account `roles/run.invoker`:
 
 ```bash
 cd backend
 gcloud run deploy weekend-api \
   --source . \
   --region us-central1 \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --set-env-vars "USE_DEMO_DATA=true,GEMINI_API_KEY=...,TAVILY_API_KEY=...,PMTX_TOKEN=..."
+
+# Allow App Hosting to call Cloud Run (service account name may vary — check IAM)
+gcloud run services add-iam-policy-binding weekend-api \
+  --region us-central1 \
+  --member="serviceAccount:firebase-app-hosting-compute@perfect-weekend-planner.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
 ```
 
 Set `BACKEND_URL` in `frontend/apphosting.yaml` to the Cloud Run service URL, then redeploy the frontend.
+
+**Auth flow (Option C):** clients → App Hosting `/api/*` (Firebase ID token verified by Next.js + `firebase-admin`) → Cloud Run `/discover` and `/plan` (Firebase token re-verified by FastAPI via `Authorization` or `X-Firebase-Authorization`; App Hosting attaches a Google OIDC token for Cloud Run IAM). `/health` stays unauthenticated for probes.
+
+**Deploy order:** (1) Cloud Run backend with `--no-allow-unauthenticated`, (2) grant `roles/run.invoker` to App Hosting SA, (3) deploy App Hosting frontend with updated `BACKEND_URL`.
 
 ### Local map
 

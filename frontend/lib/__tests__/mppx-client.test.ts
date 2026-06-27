@@ -11,6 +11,10 @@ vi.mock("viem/accounts", () => ({
   privateKeyToAccount: vi.fn(),
 }));
 
+vi.mock("../api-auth", () => ({
+  fetchWithAuth: (...args: Parameters<typeof fetch>) => fetch(...args),
+}));
+
 import { planWeekend } from "../mppx-client";
 
 const planRequest: PlanRequest = {

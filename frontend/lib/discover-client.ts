@@ -1,3 +1,4 @@
+import { fetchWithAuth } from "./api-auth";
 import type { CalendarSlot, DiscoverParams, DiscoverResponse, UserProfile } from "./types";
 
 export class DiscoverError extends Error {
@@ -47,9 +48,10 @@ export async function fetchDiscoverEvents(
     searchParams.set("calendar_slots", JSON.stringify(params.calendarSlots));
   }
 
-  const response = await fetch(`/api/discover?${searchParams.toString()}`, {
-    signal,
-  });
+  const response = await fetchWithAuth(
+    `/api/discover?${searchParams.toString()}`,
+    { signal },
+  );
 
   const payload = (await response.json().catch(() => ({}))) as
     | DiscoverResponse

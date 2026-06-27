@@ -60,7 +60,7 @@ def test_discover_with_budget_requires_pmpx_token(
         params={"location": "Austin", "budget": 50},
     )
     assert response.status_code == 503
-    assert "PMTX_TOKEN" in response.json()["detail"]
+    assert "configuration" in response.json()["detail"].lower()
 
 
 def test_discover_with_budget_and_invalid_calendar_slots(
@@ -107,9 +107,10 @@ def test_plan_missing_env_vars_returns_503(
     )
     assert response.status_code == 503
     detail = response.json()["detail"]
-    assert "GEMINI_API_KEY" in detail
-    assert "TAVILY_API_KEY" in detail
-    assert "PMTX_TOKEN" in detail
+    assert "configuration" in detail.lower()
+    assert "GEMINI_API_KEY" not in detail
+    assert "TAVILY_API_KEY" not in detail
+    assert "PMTX_TOKEN" not in detail
 
 
 @patch("main.run_weekend_planner")

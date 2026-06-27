@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../api-auth", () => ({
+  fetchWithAuth: (...args: Parameters<typeof fetch>) => fetch(...args),
+}));
+
 import {
   discoverQueryFromProfile,
   DiscoverError,

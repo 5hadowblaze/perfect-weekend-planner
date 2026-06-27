@@ -97,6 +97,21 @@ final class AuthService {
     user = nil
   }
 
+  func getIDToken(forceRefresh: Bool = false) async throws -> String? {
+    if isMockAuth {
+      return nil
+    }
+
+    #if canImport(FirebaseAuth)
+    guard let firebaseUser = Auth.auth().currentUser else {
+      return nil
+    }
+    return try await firebaseUser.getIDToken(forcingRefresh: forceRefresh)
+    #else
+    return nil
+    #endif
+  }
+
   // MARK: - Private
 
   private func restoreSession() {

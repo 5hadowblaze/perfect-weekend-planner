@@ -1,6 +1,14 @@
 import { NextRequest } from "next/server";
 
+import { fetchBackend } from "@/lib/server/backend-fetch";
+import { verifyRequestAuth } from "@/lib/server/auth";
+
 export async function GET(request: NextRequest) {
+  const authResult = await verifyRequestAuth(request);
+  if (authResult instanceof Response) {
+    return authResult;
+  }
+
   const location = request.nextUrl.searchParams.get("location");
   if (!location?.trim()) {
     return Response.json(
@@ -9,7 +17,6 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const backendUrl = process.env.BACKEND_URL ?? "http://localhost:8000";
   const params = new URLSearchParams({ location: location.trim() });
 
   for (const key of ["budget", "diet", "activities", "accessibility", "calendar_slots"]) {
@@ -19,10 +26,15 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  const authHeader = request.headers.get("Authorization");
+
   try {
-    const backendResponse = await fetch(
-      `${backendUrl}/discover?${params.toString()}`,
-      { next: { revalidate: 0 } },
+    const backendResponse = await fetchBackend(
+      `/discover?${params.toString()}`,
+      {
+        next: { revalidate: 0 },
+        firebaseAuthHeader: authHeader,
+      },
     );
 
     const data = await backendResponse.json().catch(() => ({
@@ -42,8 +54,9 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Backend unreachable";
+    console.error("Discover proxy error:", message);
     return Response.json(
-      { detail: `Backend error: ${message}` },
+      { detail: "Backend temporarily unavailable" },
       { status: 502 },
     );
   }

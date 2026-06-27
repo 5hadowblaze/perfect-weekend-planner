@@ -48,15 +48,18 @@ final class ExplorerViewModel {
     private let calendarService: CalendarService
 
     init(
-        apiClient: APIClient = APIClient(),
         profileService: ProfileService = ProfileService(),
         calendarService: CalendarService = CalendarService(),
-        authService: AuthService? = nil
+        authService: AuthService? = nil,
+        apiClient: APIClient? = nil
     ) {
-        self.apiClient = apiClient
+        let resolvedAuthService = authService ?? AuthService()
+        self.authService = resolvedAuthService
+        self.apiClient = apiClient ?? APIClient(tokenProvider: { forceRefresh in
+            try await resolvedAuthService.getIDToken(forceRefresh: forceRefresh)
+        })
         self.profileService = profileService
         self.calendarService = calendarService
-        self.authService = authService ?? AuthService()
     }
 
     var selectedEvent: DiscoverEvent? {

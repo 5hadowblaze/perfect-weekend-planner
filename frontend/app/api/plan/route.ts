@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 
 import { mppx } from "@/lib/mppx";
+import { fetchBackend } from "@/lib/server/backend-fetch";
+import { verifyRequestAuth } from "@/lib/server/auth";
 
 /** MPP is scaffolded only — skipped by default for hackathon demos. Set SKIP_MPP=false to enable. */
 function isMppEnabled(): boolean {
@@ -8,21 +10,23 @@ function isMppEnabled(): boolean {
 }
 
 async function proxyToBackend(request: NextRequest): Promise<Response> {
-  const backendUrl = process.env.BACKEND_URL ?? "http://localhost:8000";
   const body = await request.text();
+  const authHeader = request.headers.get("Authorization");
 
   let backendResponse: Response;
   try {
-    backendResponse = await fetch(`${backendUrl}/plan`, {
+    backendResponse = await fetchBackend("/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      firebaseAuthHeader: authHeader,
       body,
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Backend unreachable";
+    console.error("Plan proxy error:", message);
     return Response.json(
-      { detail: `Backend error: ${message}` },
+      { detail: "Backend temporarily unavailable" },
       { status: 502 },
     );
   }
@@ -39,6 +43,11 @@ async function proxyToBackend(request: NextRequest): Promise<Response> {
 }
 
 export async function POST(request: NextRequest) {
+  const authResult = await verifyRequestAuth(request);
+  if (authResult instanceof Response) {
+    return authResult;
+  }
+
   if (!isMppEnabled()) {
     return proxyToBackend(request);
   }

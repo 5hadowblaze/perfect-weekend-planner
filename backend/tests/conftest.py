@@ -131,10 +131,18 @@ def api_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
+    from auth import require_firebase_user
     from main import app
+
+    async def mock_firebase_user() -> dict[str, str]:
+        return {"uid": "test-user", "email": "test@example.com"}
+
+    app.dependency_overrides[require_firebase_user] = mock_firebase_user
 
     with TestClient(app) as test_client:
         yield test_client
+
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture

@@ -28,19 +28,24 @@ enum APIClientError: LocalizedError, Equatable {
 // MARK: - Client
 
 struct APIClient: Sendable {
+    typealias TokenProvider = @Sendable (_ forceRefresh: Bool) async throws -> String?
+
     private let baseURL: URL
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let tokenProvider: TokenProvider?
 
     init(
         baseURL: URL = AppConfig.backendURL,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        tokenProvider: TokenProvider? = nil
     ) {
         self.baseURL = baseURL
         self.session = session
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
+        self.tokenProvider = tokenProvider
     }
 
     func discoverURL(for query: DiscoverQuery) throws -> URL {
@@ -114,16 +119,31 @@ struct APIClient: Sendable {
         return items
     }
 
-    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let data: Data
-        let response: URLResponse
+    private func applyAuth(to request: inout URLRequest, forceRefresh: Bool) async throws {
+        guard let tokenProvider else { return }
+        let token = try await tokenProvider(forceRefresh)
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+    }
 
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw error
+    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+        var currentRequest = request
+        try await applyAuth(to: &currentRequest, forceRefresh: false)
+
+        let (data, response) = try await session.data(for: currentRequest)
+
+        if let http = response as? HTTPURLResponse, http.statusCode == 401, tokenProvider != nil {
+            var retryRequest = request
+            try await applyAuth(to: &retryRequest, forceRefresh: true)
+            let (retryData, retryResponse) = try await session.data(for: retryRequest)
+            return try decodeResponse(data: retryData, response: retryResponse)
         }
 
+        return try decodeResponse(data: data, response: response)
+    }
+
+    private func decodeResponse<T: Decodable>(data: Data, response: URLResponse) throws -> T {
         guard let http = response as? HTTPURLResponse else {
             throw APIClientError.invalidResponse
         }

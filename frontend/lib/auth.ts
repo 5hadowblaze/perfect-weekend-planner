@@ -27,6 +27,11 @@ export const GOOGLE_CALENDAR_READONLY_SCOPE =
 const MOCK_USER_KEY = "sidequest-mock-user";
 const LEGACY_MOCK_USER_KEY = "weekend-explorer-mock-user";
 
+/** Mock auth is allowed only in local development when Firebase is not configured. */
+export function isMockAuthAllowed(): boolean {
+  return process.env.NODE_ENV === "development" && !isFirebaseConfigured();
+}
+
 /** Google sign-in — Firebase default scopes only (email, profile, openid). */
 const googleSignInProvider = new GoogleAuthProvider();
 googleSignInProvider.setCustomParameters({ prompt: "select_account" });
@@ -195,6 +200,11 @@ export async function signInWithGoogle(): Promise<GoogleSignInResult | AuthUser>
   const firebaseReady = isFirebaseConfigured();
 
   if (!firebaseReady) {
+    if (!isMockAuthAllowed()) {
+      throw new Error(
+        "Sign-in is unavailable: Firebase is not configured for this environment.",
+      );
+    }
     const mockUser: AuthUser = {
       uid: `mock-${Date.now()}`,
       displayName: "Explorer",
@@ -266,10 +276,11 @@ export function useAuth() {
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signInLoading, setSignInLoading] = useState(false);
   const firebaseReady = isFirebaseConfigured();
+  const mockAuthAllowed = isMockAuthAllowed();
 
   useEffect(() => {
     if (!firebaseReady) {
-      setUser(readMockUser());
+      setUser(mockAuthAllowed ? readMockUser() : null);
       setLoading(false);
       return;
     }
@@ -385,6 +396,6 @@ export function useAuth() {
     signInLoading,
     signInWithGoogle: handleSignIn,
     signOut: handleSignOut,
-    isMockAuth: !firebaseReady,
+    isMockAuth: mockAuthAllowed,
   };
 }

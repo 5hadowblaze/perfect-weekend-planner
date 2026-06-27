@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const chargeMock = vi.fn();
+const verifyRequestAuthMock = vi.fn();
+const fetchBackendMock = vi.fn();
 
 vi.mock("@/lib/mppx", () => ({
   mppx: {
@@ -11,12 +13,26 @@ vi.mock("@/lib/mppx", () => ({
   },
 }));
 
+vi.mock("@/lib/server/auth", () => ({
+  verifyRequestAuth: (...args: unknown[]) => verifyRequestAuthMock(...args),
+}));
+
+vi.mock("@/lib/server/backend-fetch", () => ({
+  fetchBackend: (...args: unknown[]) => fetchBackendMock(...args),
+}));
+
 import { POST } from "../route";
 
-function makePlanRequest(body: unknown): NextRequest {
+function makePlanRequest(
+  body: unknown,
+  headers?: Record<string, string>,
+): NextRequest {
   return new NextRequest("http://localhost:3000/api/plan", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
     body: JSON.stringify(body),
   });
 }
@@ -26,11 +42,31 @@ describe("POST /api/plan", () => {
     vi.stubEnv("BACKEND_URL", "http://backend.test");
     vi.stubEnv("SKIP_MPP", "true");
     chargeMock.mockReset();
+    verifyRequestAuthMock.mockResolvedValue({
+      uid: "user-1",
+      email: "user@example.com",
+    });
+    fetchBackendMock.mockReset();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    verifyRequestAuthMock.mockReset();
+    fetchBackendMock.mockReset();
+  });
+
+  it("returns 401 when auth verification fails", async () => {
+    verifyRequestAuthMock.mockResolvedValue(
+      Response.json({ detail: "Authentication required" }, { status: 401 }),
+    );
+
+    const response = await POST(makePlanRequest({ location: "Austin, TX" }));
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      detail: "Authentication required",
+    });
   });
 
   it("proxies directly to backend when SKIP_MPP is not false", async () => {
@@ -45,27 +81,28 @@ describe("POST /api/plan", () => {
       },
     };
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => backendPayload,
-      }),
-    );
+    fetchBackendMock.mockResolvedValue({
+      ok: true,
+      json: async () => backendPayload,
+    });
 
     const response = await POST(
-      makePlanRequest({
-        location: "Austin, TX",
-        budget: 150,
-        diet: "vegan",
-        activities: "music",
-      }),
+      makePlanRequest(
+        {
+          location: "Austin, TX",
+          budget: 150,
+          diet: "vegan",
+          activities: "music",
+        },
+        { Authorization: "Bearer test-token" },
+      ),
     );
 
     expect(chargeMock).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith("http://backend.test/plan", {
+    expect(fetchBackendMock).toHaveBeenCalledWith("/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      firebaseAuthHeader: "Bearer test-token",
       body: JSON.stringify({
         location: "Austin, TX",
         budget: 150,
@@ -92,13 +129,10 @@ describe("POST /api/plan", () => {
       },
     };
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => backendPayload,
-      }),
-    );
+    fetchBackendMock.mockResolvedValue({
+      ok: true,
+      json: async () => backendPayload,
+    });
 
     chargeMock.mockImplementation(() => (handler: (req: Request) => Response | Promise<Response>) =>
       handler,
@@ -113,28 +147,21 @@ describe("POST /api/plan", () => {
   });
 
   it("returns 502 when backend is unreachable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-    );
+    fetchBackendMock.mockRejectedValue(new Error("ECONNREFUSED"));
 
     const response = await POST(makePlanRequest({ location: "Austin, TX" }));
     const body = await response.json();
 
     expect(response.status).toBe(502);
-    expect(body.detail).toContain("Backend error");
-    expect(body.detail).toContain("ECONNREFUSED");
+    expect(body.detail).toBe("Backend temporarily unavailable");
   });
 
   it("forwards backend error status and payload", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 422,
-        json: async () => ({ detail: "Invalid plan request" }),
-      }),
-    );
+    fetchBackendMock.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({ detail: "Invalid plan request" }),
+    });
 
     const response = await POST(makePlanRequest({ location: "Austin, TX" }));
 

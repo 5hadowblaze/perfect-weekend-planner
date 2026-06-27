@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent import run_weekend_planner
+from auth import require_firebase_user
 from discover import discover_local_events, parse_calendar_slots
 from models import CalendarSlot, DiscoverResponse, PlanRequest, PlanResult, UserConstraintContext
 from prometheux_filter import PrometheuxConfigError, PrometheuxEngineBusyError, PrometheuxSDKError
+
+logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env.local")
@@ -37,6 +41,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SERVICE_UNAVAILABLE = "Service temporarily unavailable. Please try again later."
+CONFIG_UNAVAILABLE = "Required service configuration is missing."
+DISCOVER_FAILED = "Failed to discover events."
+PLANNING_FAILED = "Failed to generate plan."
+
 
 @app.get("/health")
 def health() -> dict[str, bool]:
@@ -45,6 +54,7 @@ def health() -> dict[str, bool]:
 
 @app.get("/discover", response_model=DiscoverResponse)
 def discover(
+    _user: Annotated[dict, Depends(require_firebase_user)],
     location: str,
     budget: Optional[float] = Query(default=None, gt=0),
     diet: Optional[str] = Query(default=None),
@@ -61,10 +71,8 @@ def discover(
     context: UserConstraintContext | None = None
     if budget is not None:
         if not os.environ.get("PMTX_TOKEN"):
-            raise HTTPException(
-                status_code=503,
-                detail="PMTX_TOKEN is required for Prometheux discover filtering",
-            )
+            logger.error("Discover filtering requested but PMTX_TOKEN is not configured")
+            raise HTTPException(status_code=503, detail=CONFIG_UNAVAILABLE)
         try:
             slots = [CalendarSlot.model_validate(item) for item in parse_calendar_slots(calendar_slots)]
         except ValueError as exc:
@@ -84,41 +92,50 @@ def discover(
     try:
         return discover_local_events(location.strip(), context=context)
     except PrometheuxConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception("Prometheux configuration error during discover: %s", exc)
+        raise HTTPException(status_code=503, detail=CONFIG_UNAVAILABLE) from exc
     except PrometheuxEngineBusyError as exc:
+        logger.warning("Prometheux engine busy during discover: %s", exc)
         raise HTTPException(
             status_code=503,
-            detail=str(exc),
+            detail=SERVICE_UNAVAILABLE,
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
     except PrometheuxSDKError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception("Prometheux SDK error during discover: %s", exc)
+        raise HTTPException(status_code=503, detail=SERVICE_UNAVAILABLE) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception("Unexpected error during discover: %s", exc)
+        raise HTTPException(status_code=503, detail=DISCOVER_FAILED) from exc
 
 
 @app.post("/plan", response_model=PlanResult)
-def plan(request: PlanRequest) -> PlanResult:
+def plan(
+    request: PlanRequest,
+    _user: Annotated[dict, Depends(require_firebase_user)],
+) -> PlanResult:
     missing = [
         key
         for key in ("GEMINI_API_KEY", "TAVILY_API_KEY", "PMTX_TOKEN")
         if not os.environ.get(key)
     ]
     if missing:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Missing required environment variables: {', '.join(missing)}",
-        )
+        logger.error("Plan requested but required configuration is missing: %s", ", ".join(missing))
+        raise HTTPException(status_code=503, detail=CONFIG_UNAVAILABLE)
 
     try:
         return run_weekend_planner(request)
     except PrometheuxConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception("Prometheux configuration error during plan: %s", exc)
+        raise HTTPException(status_code=503, detail=CONFIG_UNAVAILABLE) from exc
     except PrometheuxSDKError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.exception("Prometheux SDK error during plan: %s", exc)
+        raise HTTPException(status_code=502, detail=PLANNING_FAILED) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=503, detail=f"Missing configuration: {exc}") from exc
+        logger.exception("Missing configuration during plan: %s", exc)
+        raise HTTPException(status_code=503, detail=CONFIG_UNAVAILABLE) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.exception("Unexpected error during plan: %s", exc)
+        raise HTTPException(status_code=502, detail=PLANNING_FAILED) from exc

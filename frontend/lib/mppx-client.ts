@@ -1,6 +1,7 @@
 import { Mppx, tempo } from "mppx/client";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { fetchWithAuth } from "./api-auth";
 import type { PlanRequest, PlanResult } from "./types";
 
 /** MPP is scaffolded only — skipped by default. Set SKIP_MPP=false + wallet keys to enable. */
@@ -39,7 +40,7 @@ export async function planWeekend(
 ): Promise<PlanResult> {
   onStatus?.("planning");
 
-  const fetchFn = isMppEnabled() ? getPaidFetch() : fetch;
+  const fetchFn = isMppEnabled() ? getPaidFetch() : fetchWithAuth;
   const response = await fetchFn("/api/plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

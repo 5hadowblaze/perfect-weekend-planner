@@ -1,16 +1,29 @@
 import Foundation
 
 enum AppConfig {
-  private static let defaultBackendURL = "http://127.0.0.1:8000"
+  private static let localBackendURL = "http://127.0.0.1:8000"
+  /// App Hosting origin + `/api` prefix (Next.js proxies to Cloud Run).
+  private static let productionBackendURL =
+    "https://weekend-explorer--perfect-weekend-planner.us-central1.hosted.app/api"
 
-  /// Backend base URL from Info.plist `BACKEND_URL`, falling back to local dev server.
+  /// Backend base URL from Info.plist `BACKEND_URL`, with environment-aware defaults.
   static var backendURL: URL {
     let raw = Bundle.main.object(forInfoDictionaryKey: "BACKEND_URL") as? String
     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let urlString = trimmed.isEmpty ? defaultBackendURL : trimmed
+
+    let urlString: String
+    if !trimmed.isEmpty {
+      urlString = trimmed
+    } else {
+      #if DEBUG
+      urlString = localBackendURL
+      #else
+      urlString = productionBackendURL
+      #endif
+    }
 
     guard let url = URL(string: urlString) else {
-      return URL(string: defaultBackendURL)!
+      return URL(string: localBackendURL)!
     }
     return url
   }
