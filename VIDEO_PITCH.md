@@ -36,7 +36,7 @@ You set your constraints — budget, diet, what you're in the mood for. It reads
 
 **[Map loads — events pin across the city]**
 
-"Sidequest hits the open web with **Tavily** — actual listings, this week. Then **Prometheux** applies Vadalog rules: budget, location, diet, my free slots from Google Calendar. Twelve in, four out — only what passed shows up here."
+"Sidequest pulls from **Luma** and **Eventbrite**, enriches with **Tavily** — Instagram, social, Google, actual listings this week. Then **Prometheux** applies deterministic logic rules: budget, location, diet, my free slots. Twelve in, four out — only what passed shows up here."
 
 **[Tap a card — badges: Budget, Diet, free Saturday afternoon]**
 
